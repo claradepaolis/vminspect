@@ -29,12 +29,12 @@
 
 
 import logging
-import requests
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
 from vminspect.filesystem import FileSystem
 
+from load_cve import load_local
 
 class VulnScanner:
     """Vulnerability scanner.
@@ -43,15 +43,15 @@ class VulnScanner:
     a CVE DB for vulnerabilities.
 
     disk must contain the path of a valid disk image.
-    url must be a valid URL to a REST vulnerability service.
 
     """
-    def __init__(self, disk, url):
+    def __init__(self, disk, cvefeed):
         self._disk = disk
         self._filesystem = None
-        self._url = url.rstrip('/')
+        self._cvefeed = load_local(cvefeed)['CVE_Items']
         self.logger = logging.getLogger(
             "%s.%s" % (self.__module__, self.__class__.__name__))
+        self.logger.setLevel(50)
 
     def __enter__(self):
         self._filesystem = FileSystem(self._disk)
@@ -84,16 +84,22 @@ class VulnScanner:
         """
         self.logger.debug("Scanning FS content.")
 
+        applications = self.applications()
+        #print("#####application versions: ######")
+        #for application in applications:
+            #print(application.name + " : " + application.version + " : " + application.publisher)
+
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             results = executor.map(self.query_vulnerabilities,
-                                   self.applications())
-
+                                   self.applications()) 
         for report in results:
-            application, vulnerabilities = report
-            vulnerabilities = list(lookup_vulnerabilities(application.version,
-                                                          vulnerabilities))
-
+            #TODO: implement output design here for each application in correct json format
+            application, vulnerabilities = report                              
+            #vulnerabilities = list(lookup_vulnerabilities(application.version,
+            #                                              vulnerabilities))
+                
             if vulnerabilities:
+            #    full_vulnerabilities = [FullVuln(v.id, v.summary, self.query_cve_info(v.id)) for v in vulnerabilities]
                 yield VulnApp(application.name,
                               application.version,
                               vulnerabilities)
@@ -102,15 +108,28 @@ class VulnScanner:
         self.logger.debug("Quering %s vulnerabilities.", application.name)
 
         name = application.name.lower()
-        url = '/'.join((self._url, name, name))
+        version = application.version
+        results = []
+        for cve in self._cvefeed:
+            vendor_list = cve['cve']['affects']['vendor']['vendor_data']
+            for vendor in vendor_list:
+                for product in vendor['product']['product_data']: 
+                    if product['product_name'].lower() == name:
+                        product_versions_list = product['version']['version_data']
+                        if {'version_value' : version} in product_versions_list:
+                            #print(name + ":" + cve['cve']['CVE_data_meta']['ID'] + ":" + version)
+                            results.append(cve)
+        return application, results
+            
 
-        response = requests.get(url)
-        response.raise_for_status()
-
-        return application, response.json()
+    def query_cve_info(self, cve_id):
+        # query local cve database
+        result = [item['cve'] for item in self._cvefeed if item['cve']['CVE_data_meta']['ID'] == cve_id]
+        return result
+        
 
     def applications(self):
-        return (Application(a['app2_name'], a['app2_version'])
+        return (Application(a['app2_name'], a['app2_version'], a['app2_publisher'])
                 for a in self._filesystem.inspect_list_applications2(
                         self._filesystem._root))
 
@@ -132,6 +151,8 @@ VulnApp = namedtuple('VulnApp', ('name',
                                  'version',
                                  'vulnerabilities'))
 Application = namedtuple('Application', ('name',
-                                         'version'))
+                                         'version',
+                                         'publisher'))
 Vulnerability = namedtuple('Vulnerability', ('id',
                                              'summary'))
+FullVuln = namedtuple('FullVuln', ('id', 'summary', 'impact'))

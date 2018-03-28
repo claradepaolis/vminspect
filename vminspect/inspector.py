@@ -36,14 +36,18 @@ from pathlib import Path
 from collections import OrderedDict
 from tempfile import NamedTemporaryFile
 
-from vminspect.vtscan import VTScanner
+#from vminspect.vtscan import VTScanner
+from vtscan import VTScanner
 from vminspect.usnjrnl import usn_journal
 from vminspect.winevtx import WinEventLog
-from vminspect.vulnscan import VulnScanner
+#from vminspect.vulnscan import VulnScanner
+from vulnscan import VulnScanner
 from vminspect.comparator import DiskComparator
 from vminspect.timeline import FSTimeline, NTFSTimeline
 from vminspect.winreg import RegistryHive, registry_root
 from vminspect.filesystem import FileSystem, hash_filesystem, posix_path
+
+from load_cve import dl_remote
 
 
 def main():
@@ -60,8 +64,7 @@ def main():
 
 
 def list_files_command(arguments):
-    return list_files(arguments.disk, identify=arguments.identify,
-                      size=arguments.size)
+    return list_files(arguments.disk, identify=arguments.identify, size=arguments.size)
 
 
 def list_files(disk, identify=False, size=False):
@@ -143,15 +146,25 @@ def extract_registry(filesystem, path):
 
 
 def vtscan_command(arguments):
+    print("I got your arguments")
+    print(arguments)
     with VTScanner(arguments.disk, arguments.apikey) as vtscanner:
         vtscanner.batchsize = arguments.batchsize
         filetypes = arguments.types and arguments.types.split(',') or None
 
+        #vtscanner.scan(filetypes=filetypes)
         return [r._asdict() for r in vtscanner.scan(filetypes=filetypes)]
+        # return []
 
 
 def vulnscan_command(arguments):
-    with VulnScanner(arguments.disk, arguments.url) as vulnscanner:
+    if arguments.cvefeed is None and arguments.remote is False:
+        raise ValueError('Specify local CVE data feed path or remote download flag -r --remote and local path to save to')
+    if arguments.remote:
+        dl_remote(arguments.cvefeed)
+        print("CVE data feed downloaded")
+
+    with VulnScanner(arguments.disk, arguments.cvefeed) as vulnscanner:        
         return [r._asdict() for r in vulnscanner.scan(arguments.concurrency)]
 
 
@@ -346,13 +359,21 @@ def parse_arguments():
         '-t', '--types', type=str, default='',
         help='comma separated list of file types (REGEX) to be scanned')
 
+    # vulnscan arguments:
+    # changes made here to download CVE db feed from NVD
     vulnscan_parser = subparsers.add_parser(
         'vulnscan', help='Scans a disk and queries VBE.')
-    vulnscan_parser.add_argument('url', type=str,
-                                 help='URL to vulnerabilities DB')
+    #vulnscan_parser.add_argument('url', type=str,
+    #                             help='URL to vulnerabilities DB')
+    # options for downloading or reading (local) CVE database:
+    vulnscan_parser.add_argument('cvefeed', type=str,
+            help='local path to CVE data feeds in json format or path to save downloaded feed')
     vulnscan_parser.add_argument('disk', type=str, help='path to disk image')
     vulnscan_parser.add_argument('-c', '--concurrency', type=int, default=1,
-                                 help='amount of concurrent queries against DB')
+            help='amount of concurrent queries against DB')
+    # options for downloading CVE database:   
+    vulnscan_parser.add_argument('-r', '--remote', action='store_true', default=False,
+            help='download CVE data feed from NVD at https://nvd.nist.gov/vuln/data-feeds#JSON_FEED')
 
     usnjrnl_parser = subparsers.add_parser(
         'usnjrnl', help='Parses the Update Sequence Number Journal file.')
@@ -397,6 +418,12 @@ def parse_arguments():
     return parser.parse_args()
 
 
+# list all the files contained within a disk image
+# Compare two disk images
+# Query Virustotal regarding the content of a disk.
+# Query a CVE database for vulnerable applications.
+# Extract event timelines of NTFS disks. Installation of 7Zip on Windows 7.
+# Parse Windows Event Log files.
 COMMANDS = {'list': list_files_command,
             'compare': compare_command,
             'registry': registry_command,
